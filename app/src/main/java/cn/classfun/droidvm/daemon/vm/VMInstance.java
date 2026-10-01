@@ -240,6 +240,11 @@ public final class VMInstance extends VMConfig {
             joinThreads(1000);
             if (!setupTaps()) return false;
             resolveVncConfig();
+            // A start from STOPPED is a fresh, user-initiated start and gets the full GH_VM_START
+            // retry budget; only the automatic relaunches (which come in from REBOOTING) may
+            // draw it down. Otherwise one exhausted round -- or a retried VM killed within
+            // PIN_RETRY_RESET_MS -- would leave every later manual start with fewer retries.
+            if (state == VMState.STOPPED) gunyahStartRetries = 0;
             stoppedByUser = false;
             exitCode = -1;
             setState(VMState.STARTING);
