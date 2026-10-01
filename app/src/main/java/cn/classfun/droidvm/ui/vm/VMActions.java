@@ -10,6 +10,7 @@ import static cn.classfun.droidvm.lib.store.enums.Enums.optEnum;
 import static cn.classfun.droidvm.lib.utils.ImageUtils.hasInternalSnapshots;
 import static cn.classfun.droidvm.lib.utils.StringUtils.basename;
 import static cn.classfun.droidvm.lib.utils.StringUtils.dirname;
+import static cn.classfun.droidvm.lib.utils.StringUtils.fmt;
 import static cn.classfun.droidvm.lib.utils.StringUtils.pathJoin;
 import static cn.classfun.droidvm.lib.utils.ThreadUtils.runOnPool;
 import static cn.classfun.droidvm.ui.main.settings.MainSettingsFragment.isAutoConsoleEnabled;
@@ -19,6 +20,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.CountDownTimer;
 import android.os.Handler;
+import android.os.SystemClock;
 import android.util.Log;
 import android.widget.Toast;
 
@@ -33,6 +35,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import org.json.JSONArray;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -69,7 +72,36 @@ import cn.classfun.droidvm.ui.vm.boot.BootMenuDialog;
 public final class VMActions {
     private static final String TAG = "VMActions";
 
+    /**
+     * A second start of the same VM within this window is the same tap delivered twice, not a
+     * new request. Nothing below {@link #createAndStart} can tell them apart: both entry points
+     * still read the VM as STOPPED until the daemon's STARTING event comes back, and the guard
+     * chain hops through the pool before anything is sent, so a duplicate gets a whole second
+     * vm_exists/vm_modify/vm_start chain whose vm_modify then lands on a starting VM.
+     */
+    private static final long DUPLICATE_START_WINDOW_MS = 1000;
+    private static final Map<UUID, Long> lastStartAt = new HashMap<>();
+
     private VMActions() {
+    }
+
+    /**
+     * Records a start of {@code vmId}, or returns false when one was already recorded within
+     * {@link #DUPLICATE_START_WINDOW_MS}. Logs the duplicate's caller, so a repro shows where
+     * the second dispatch came from.
+     */
+    private static boolean claimStart(@NonNull UUID vmId) {
+        long now = SystemClock.elapsedRealtime();
+        synchronized (lastStartAt) {
+            var prev = lastStartAt.get(vmId);
+            if (prev != null && now - prev < DUPLICATE_START_WINDOW_MS) {
+                Log.w(TAG, fmt("Ignoring duplicate start of VM %s, %d ms after the previous one",
+                    vmId, now - prev), new Throwable("duplicate start caller"));
+                return false;
+            }
+            lastStartAt.put(vmId, now);
+            return true;
+        }
     }
 
     /**
@@ -89,6 +121,7 @@ public final class VMActions {
         @NonNull AtomicBoolean wantOpenConsole,
         @Nullable ConvertLauncher convertLauncher
     ) {
+        if (!claimStart(config.getId())) return;
         // Pre-start guards, in order: internal snapshots (crosvm refuses the disk), a base
         // image attached writable (writing would corrupt its overlays - any backend), a disk a
         // running VM already holds, compressed clusters (crosvm boots to I/O errors), a guest
