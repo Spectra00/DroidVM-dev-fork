@@ -39,6 +39,45 @@ static void close_all_fds_except(int min_fd, const int *keep_fds, int keep_count
     }
 }
 
+/*
+ * Child-side breadcrumbs for nativeForkExec. Between fork() and execve() the
+ * child is a copy of a multithreaded ART process, so only async-signal-safe
+ * calls are allowed: no malloc, no stdio, no __android_log_print. Each line is
+ * built on the stack and handed to a single write(), so it lands whole in the
+ * child's stderr pipe -- the stream the app already captures for the process.
+ */
+#define CRUMB_PREFIX "[nativeForkExec child] "
+
+static size_t crumb_append(char *buf, size_t pos, size_t cap, const char *s) {
+    while (*s && pos < cap) buf[pos++] = *s++;
+    return pos;
+}
+
+static size_t crumb_append_int(char *buf, size_t pos, size_t cap, long v) {
+    char tmp[24];
+    size_t n = 0;
+    unsigned long u = v < 0 ? (unsigned long) -v : (unsigned long) v;
+    do {
+        tmp[n++] = (char) ('0' + u % 10);
+        u /= 10;
+    } while (u && n < sizeof(tmp));
+    if (v < 0 && pos < cap) buf[pos++] = '-';
+    while (n && pos < cap) buf[pos++] = tmp[--n];
+    return pos;
+}
+
+/* "<prefix><msg>[<num>]\n"; pass has_num = 0 to leave the number out. */
+static void crumb(int fd, const char *msg, int has_num, long num) {
+    char buf[256];
+    size_t cap = sizeof(buf) - 1, pos = 0;
+    pos = crumb_append(buf, pos, cap, CRUMB_PREFIX);
+    pos = crumb_append(buf, pos, cap, msg);
+    if (has_num) pos = crumb_append_int(buf, pos, cap, num);
+    buf[pos++] = '\n';
+    ssize_t r = write(fd, buf, pos);
+    (void) r;
+}
+
 #define JNI_PREFIX(name) \
     Java_cn_classfun_droidvm_lib_natives_NativeProcess_##name
 
@@ -119,9 +158,15 @@ JNI_PREFIX(nativeForkExec)(
         goto fail;
     }
     if (pid == 0) {
-        dup2(pipe_stdin[0], STDIN_FILENO);
-        dup2(pipe_stdout[1], STDOUT_FILENO);
-        dup2(pipe_stderr[1], STDERR_FILENO);
+        /* Before the dup2s fd 2 is still the parent's stderr: aim at the pipe. */
+        crumb(pipe_stderr[1], "start pid=", 1, (long) getpid());
+        if (dup2(pipe_stdin[0], STDIN_FILENO) < 0)
+            crumb(pipe_stderr[1], "dup2(stdin) failed errno=", 1, errno);
+        if (dup2(pipe_stdout[1], STDOUT_FILENO) < 0)
+            crumb(pipe_stderr[1], "dup2(stdout) failed errno=", 1, errno);
+        if (dup2(pipe_stderr[1], STDERR_FILENO) < 0)
+            crumb(pipe_stderr[1], "dup2(stderr) failed errno=", 1, errno);
+        crumb(STDERR_FILENO, "after dup2", 0, 0);
         int keep_count = 3 + preserve_count;
         int *keep_fds = alloca(keep_count * sizeof(int));
         keep_fds[0] = STDIN_FILENO;
@@ -129,28 +174,44 @@ JNI_PREFIX(nativeForkExec)(
         keep_fds[2] = STDERR_FILENO;
         for (int i = 0; i < preserve_count; i++)
             keep_fds[3 + i] = (int) preserve_raw[i];
+        crumb(STDERR_FILENO, "close_all_fds_except: sweeping fds 3..", 1,
+              sysconf(_SC_OPEN_MAX));
         close_all_fds_except(3, keep_fds + 3, preserve_count);
+        crumb(STDERR_FILENO, "after close_all_fds_except", 0, 0);
         for (int i = 0; i < preserve_count; i++)
             set_cloexec((int) preserve_raw[i], 0);
-        if (dir_cstr && chdir(dir_cstr) < 0)
+        crumb(STDERR_FILENO, "after clearing cloexec on preserved fds, count=", 1,
+              preserve_count);
+        if (dir_cstr && chdir(dir_cstr) < 0) {
+            crumb(STDERR_FILENO, "chdir failed, exiting 127, errno=", 1, errno);
             _exit(127);
+        }
+        crumb(STDERR_FILENO, "after chdir", 0, 0);
         struct sigaction sa;
         memset(&sa, 0, sizeof(sa));
         sa.sa_handler = SIG_DFL;
         for (int s = 1; s < NSIG; s++)
             sigaction(s, &sa, NULL);
+        crumb(STDERR_FILENO, "after signal reset", 0, 0);
         for (int i = 0; i < rlimit_count; i++) {
             int resource = (int) rlimits_raw[i * 3];
             struct rlimit rl;
             rl.rlim_cur = (rlim_t) rlimits_raw[i * 3 + 1];
             rl.rlim_max = (rlim_t) rlimits_raw[i * 3 + 2];
-            if (setrlimit(resource, &rl) < 0)
+            if (setrlimit(resource, &rl) < 0) {
+                crumb(STDERR_FILENO, "setrlimit failed, exiting 126, resource=", 1,
+                      resource);
+                crumb(STDERR_FILENO, "setrlimit errno=", 1, errno);
                 _exit(126);
+            }
         }
+        crumb(STDERR_FILENO, "after rlimits, count=", 1, rlimit_count);
+        crumb(STDERR_FILENO, "calling execve", 0, 0);
         if (envp)
             execve(argv[0], argv, envp);
         else
             execv(argv[0], argv);
+        crumb(STDERR_FILENO, "execve failed, exiting 127, errno=", 1, errno);
         _exit(127);
     }
     close(pipe_stdin[0]);
