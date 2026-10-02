@@ -67,27 +67,20 @@ jobs:
             "$ALIGNED"
           rm -f "$ALIGNED" /tmp/keystore.jks
 
-      - name: Get version name
-        id: version
-        run: |
-          desc="$(git describe --long --tags | sed 's/^[vV]//')"
-          if echo "$desc" | grep -qE '\-0\-g[0-9a-f]+$'; then
-            ver="$(echo "$desc" | sed 's/-0-g[0-9a-f]*$//')"
-          else
-            ver="$(echo "$desc" | sed 's/\([^-]*-g\)/r\1/;s/-/./g')"
-          fi
-          echo "name=${ver}" >> "$GITHUB_OUTPUT"
-
+      # Zipped artifacts (the default), so `gh run download <run> --name app-debug.apk`
+      # yields one installable app-debug.apk. With archive: false the artifact is the raw APK,
+      # and download clients that unzip every artifact explode it into classes.dex, res/, ...
+      # compression-level 0: an APK is already a zip, so re-compressing it buys nothing.
       - name: Upload debug APK
         uses: actions/upload-artifact@v7
         with:
-          name: DroidVM-${{ steps.version.outputs.name }}-debug
+          name: app-debug.apk
           path: app/build/outputs/apk/debug/*.apk
-          archive: false
+          compression-level: 0
 
       - name: Upload release APK
         uses: actions/upload-artifact@v7
         with:
-          name: DroidVM-${{ steps.version.outputs.name }}-release
+          name: app-release.apk
           path: app/build/outputs/apk/release/*.apk
-          archive: false
+          compression-level: 0
