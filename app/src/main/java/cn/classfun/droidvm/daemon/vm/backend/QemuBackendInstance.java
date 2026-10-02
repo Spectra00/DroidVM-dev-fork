@@ -307,7 +307,8 @@ public final class QemuBackendInstance extends VMBackendInstance {
                     }
                     var cdId = fmt("cd%d", driveCounter++);
                     args.add("-drive");
-                    args.add(fmt("file=%s,if=none,id=%s,media=cdrom,readonly=on", path, cdId));
+                    args.add(fmt("file=%s,format=%s,if=none,id=%s,media=cdrom,readonly=on",
+                        path, QemuDiskFormat.detect(path), cdId));
                     args.add("-device");
                     args.add(fmt("scsi-cd,drive=%s,bus=scsi0.0", cdId));
                     break;
@@ -320,7 +321,8 @@ public final class QemuBackendInstance extends VMBackendInstance {
                     }
                     var drId = fmt("scsi%d", driveCounter++);
                     var driveArg = new StringBuilder();
-                    driveArg.append(fmt("file=%s,if=none,id=%s", path, drId));
+                    driveArg.append(fmt("file=%s,format=%s,if=none,id=%s",
+                        path, QemuDiskFormat.detect(path), drId));
                     if (readonly) driveArg.append(",readonly=on");
                     args.add("-drive");
                     args.add(driveArg.toString());
@@ -331,6 +333,11 @@ public final class QemuBackendInstance extends VMBackendInstance {
                 }
                 case PMEM: {
                     var pmId = fmt("pmem%d", pmemCounter++);
+                    // memory-backend-file maps the file as-is: there is no format= to give.
+                    var pmFormat = QemuDiskFormat.detect(path);
+                    if (!QemuDiskFormat.RAW.equals(pmFormat))
+                        Log.w(TAG, fmt("pmem disk %s is %s, not raw: the guest will see "
+                            + "the image container bytes, not its contents", path, pmFormat));
                     long fileSize = new File(path).length();
                     if (fileSize <= 0) fileSize = 64L * 1024 * 1024;
                     args.add("-object");
@@ -347,7 +354,8 @@ public final class QemuBackendInstance extends VMBackendInstance {
                     args.add("-object");
                     args.add(fmt("iothread,id=%s", ioId));
                     var driveArg = new StringBuilder();
-                    driveArg.append(fmt("file=%s,if=none,id=%s", path, drId));
+                    driveArg.append(fmt("file=%s,format=%s,if=none,id=%s",
+                        path, QemuDiskFormat.detect(path), drId));
                     driveArg.append(agentMode
                         ? ",cache=writeback,aio=threads,discard=unmap"
                         : ",cache=unsafe,aio=threads,discard=unmap");
