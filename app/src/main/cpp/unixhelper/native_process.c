@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <sys/resource.h>
 #include <android/log.h>
@@ -24,19 +25,34 @@ static int set_cloexec(int fd, int cloexec) {
     return fcntl(fd, F_SETFD, flags);
 }
 
-static void close_all_fds_except(int min_fd, const int *keep_fds, int keep_count) {
-    int max_fd = (int) sysconf(_SC_OPEN_MAX);
-    if (max_fd < 0) max_fd = 1024;
-    for (int fd = min_fd; fd < max_fd; fd++) {
-        int keep = 0;
-        for (int i = 0; i < keep_count; i++) {
-            if (keep_fds[i] == fd) {
-                keep = 1;
-                break;
-            }
-        }
-        if (!keep) close(fd);
-    }
+#ifndef __NR_close_range
+#define __NR_close_range 436
+#endif
+#ifndef CLOSE_RANGE_CLOEXEC
+#define CLOSE_RANGE_CLOEXEC (1U << 2)
+#endif
+
+/*
+ * Mark every fd >= min_fd close-on-exec instead of closing it. The child is a
+ * fork of a multithreaded ART process: its fd table is full of descriptors
+ * owned by the runtime (binder, ashmem, ParcelFileDescriptors, ...), and
+ * calling close() on them -- bionic's close(), which fdsan checks against each
+ * fd's owner tag -- is exactly what must not happen between fork() and exec().
+ * Flagging them costs no close() at all; the kernel drops them inside execve.
+ * Returns 0 for close_range(), else the upper bound of the fcntl() fallback
+ * (kernels before 5.11).
+ */
+static long mark_fds_cloexec_from(int min_fd) {
+    if (syscall(__NR_close_range, (unsigned int) min_fd, ~0U,
+                CLOSE_RANGE_CLOEXEC) == 0)
+        return 0;
+    struct rlimit rl;
+    long max_fd = 1024;
+    if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY)
+        max_fd = (long) rl.rlim_cur;
+    for (long fd = min_fd; fd < max_fd; fd++)
+        fcntl((int) fd, F_SETFD, FD_CLOEXEC);
+    return max_fd;
 }
 
 /*
@@ -167,17 +183,25 @@ JNI_PREFIX(nativeForkExec)(
         if (dup2(pipe_stderr[1], STDERR_FILENO) < 0)
             crumb(pipe_stderr[1], "dup2(stderr) failed errno=", 1, errno);
         crumb(STDERR_FILENO, "after dup2", 0, 0);
-        int keep_count = 3 + preserve_count;
-        int *keep_fds = alloca(keep_count * sizeof(int));
-        keep_fds[0] = STDIN_FILENO;
-        keep_fds[1] = STDOUT_FILENO;
-        keep_fds[2] = STDERR_FILENO;
-        for (int i = 0; i < preserve_count; i++)
-            keep_fds[3 + i] = (int) preserve_raw[i];
-        crumb(STDERR_FILENO, "close_all_fds_except: sweeping fds 3..", 1,
-              sysconf(_SC_OPEN_MAX));
-        close_all_fds_except(3, keep_fds + 3, preserve_count);
-        crumb(STDERR_FILENO, "after close_all_fds_except", 0, 0);
+        /*
+         * Signals first: dispositions back to default and the mask emptied
+         * (ART blocks e.g. SIGQUIT on its threads, and a blocked mask would
+         * otherwise survive execve into the new program).
+         */
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = SIG_DFL;
+        for (int s = 1; s < NSIG; s++)
+            sigaction(s, &sa, NULL);
+        sigset_t none;
+        sigemptyset(&none);
+        sigprocmask(SIG_SETMASK, &none, NULL);
+        crumb(STDERR_FILENO, "after signal reset", 0, 0);
+        long swept = mark_fds_cloexec_from(3);
+        if (swept)
+            crumb(STDERR_FILENO, "marked fds cloexec via fcntl, up to ", 1, swept);
+        else
+            crumb(STDERR_FILENO, "marked fds cloexec via close_range", 0, 0);
         for (int i = 0; i < preserve_count; i++)
             set_cloexec((int) preserve_raw[i], 0);
         crumb(STDERR_FILENO, "after clearing cloexec on preserved fds, count=", 1,
@@ -187,12 +211,6 @@ JNI_PREFIX(nativeForkExec)(
             _exit(127);
         }
         crumb(STDERR_FILENO, "after chdir", 0, 0);
-        struct sigaction sa;
-        memset(&sa, 0, sizeof(sa));
-        sa.sa_handler = SIG_DFL;
-        for (int s = 1; s < NSIG; s++)
-            sigaction(s, &sa, NULL);
-        crumb(STDERR_FILENO, "after signal reset", 0, 0);
         for (int i = 0; i < rlimit_count; i++) {
             int resource = (int) rlimits_raw[i * 3];
             struct rlimit rl;
