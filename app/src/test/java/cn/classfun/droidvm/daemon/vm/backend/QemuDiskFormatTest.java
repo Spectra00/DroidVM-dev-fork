@@ -69,9 +69,10 @@ public final class QemuDiskFormatTest {
 
     @Test
     public void unreadableFileFallsBackToExtension() {
-        var dir = tmp.getRoot().getPath();
-        assertEquals("qcow2", QemuDiskFormat.detect(dir + "/missing.qcow2"));
-        assertEquals("raw", QemuDiskFormat.detect(dir + "/missing.img"));
-        assertEquals("raw", QemuDiskFormat.detect(dir + "/missing.iso"));
+        var dir = tmp.getRoot();
+        assertEquals("qcow2",
+            QemuDiskFormat.detect(new File(dir, "missing.qcow2").getPath()));
+        assertEquals("raw", QemuDiskFormat.detect(new File(dir, "missing.img").getPath()));
+        assertEquals("raw", QemuDiskFormat.detect(new File(dir, "missing.iso").getPath()));
     }
 }
