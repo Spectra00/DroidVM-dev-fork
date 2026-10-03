@@ -87,7 +87,24 @@ android {
         }
     }
 
+    signingConfigs {
+        // One debug key for every machine and every CI run, so a debug APK from any branch
+        // installs over another with `pm install -r`. Without this AGP generates a fresh
+        // ~/.android/debug.keystore on each ephemeral CI runner, every build gets its own random
+        // key, and switching builds on a device fails with INSTALL_FAILED_UPDATE_INCOMPATIBLE.
+        // The private key is public by design: it must never sign anything distributed.
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
