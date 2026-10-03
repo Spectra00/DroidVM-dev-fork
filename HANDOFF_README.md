@@ -109,7 +109,10 @@ Bring-up issues hit and how they were solved (all folded into `phase0/`):
 5. A password typed with symbols didn't survive the native display's keyboard. `03-make-seed.sh` re-seeds with a new instance-id (letters and digits only).
 6. Multi-line pastes into the native display interleave; run commands over SSH instead. An accidental Ctrl+Z stopped apt (state `T`); resume with `fg`.
 
-Next: step G (vkcube, vkmark against the 949 reference), then Phase 1.
+**Step G: `vkmark` 2025.01 score 2245** (Adreno 840, device ID `0x44050A00`), 2.4× DroidVM's R5 drm2kgsl reference of 949 on the same SoC (R5's panel was capped at 60 Hz; this panel runs at 120 Hz). Per scene: vertex 12241/3963, texture 1658/1162, shading 1102–1487, effect2d 1067/639, desktop 1248, cube 1087, clear 1127 fps. **Phase 0 complete.**
+
+Open going into Phase 1: the guest has 3.5 GB total and about 1.8 GB available with the KDE desktop idle. Add zram, and raise VM memory toward the about-5.4 GB hugepage pool ceiling, before installing Steam.
+
 
 ## 5. Phase 1 — Steam (after Phase 0 passes)
 - Requirements: 4 KiB pages (Ubuntu arm64 generic uses 4 KiB), a working Vulkan driver (drm2kgsl Turnip), unprivileged user namespaces for the Steam Linux Runtime container, and enough guest RAM and disk.
