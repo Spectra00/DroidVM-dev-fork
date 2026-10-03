@@ -94,6 +94,23 @@ VNC/native display shows the desktop → `vulkaninfo` reports `driverName = turn
 - The `nativeForkExec` CLOEXEC fix (`archive/qemu-gunyah-debian12`, `eb65e52`): **not ported.** `master` still has the original child path, and crosvm is launched through the same `NativeProcess`. But the original "crash" evidence turned out to be libsigchain logging the launcher's own deliberate signal reset (the archived QEMU handoff, section 20). The real failures on that path were QEMU option-parsing errors, and DroidVM's R5 run launched crosvm on this phone with this exact code. Revisit only if a crosvm launch dies before `execve`.
 - The pinned debug key makes CI builds update in place, but it must never reach `master`: `dev-release.yml` publishes from `master`, and `release.yml` publishes on any tag push. Keep it off branches that publish.
 
+### 4.9 Result on this phone (2026-10-03): steps A–F pass
+
+OnePlus 15 CPH2749, installed app `0.0.6.r247.g3e231d9` (prebuilts match `c4998e1`), VM: crosvm, protected without firmware, UEFI, 4 vCPU, 4096 MiB, VirGL + Native Context (drm2kgsl), VRAM 1024 MiB, Ubuntu 26.04 guest on kernel `7.0.0-38-generic`, guest additions `v0.1.0`, mesa-guest `r227672`. `phase0/guest/20-check.sh`, all PASS:
+- `restricted DMA pool at 0x16c000000, size 256 MiB`; `virtio_gpu` from `updates/dkms`; `gunyah_guest` loaded; `has_create_guest_handle=1`; `guest-alloc pool: base 0x17c000000 size 1024 MiB` (drm_buddy); host pool `drm2kgsl_host`; no `command 0x203`
+- Vulkan 1.4.358, `turnip Mesa driver`, `Adreno (TM) 840`; GL 4.6 via `zink ... (MESA_TURNIP)`; KDE Plasma Wayland desktop
+- audio: `virtio-snd - VirtIO SoundCard` (works out of the box on crosvm, unlike the QEMU path)
+
+Bring-up issues hit and how they were solved (all folded into `phase0/`):
+1. Ubuntu's cloud image uses compressed qcow2 clusters, which crosvm can't read. The app offers "Convert & start"; `02-make-image.sh` now writes the disk uncompressed.
+2. No network adapter on the VM means no `--net`, so the guest has only `lo`. Add one on the Network tab.
+3. The guest's NAT network (`192.168.188.0/24`, gVisor bridge) isn't routable from Android apps, so SSH goes through a port forward (`tcp 2222:22`, needs SNAT and a DHCPv4 static lease) to `127.0.0.1:2222`.
+4. The DHCP lease was lost when systemd-networkd restarted during boot. Fix: a static netplan address (`192.168.188.64/24`, gw `.1`, DNS 1.1.1.1/8.8.8.8) plus cloud-init network config disabled.
+5. A password typed with symbols didn't survive the native display's keyboard. `03-make-seed.sh` re-seeds with a new instance-id (letters and digits only).
+6. Multi-line pastes into the native display interleave; run commands over SSH instead. An accidental Ctrl+Z stopped apt (state `T`); resume with `fg`.
+
+Next: step G (vkcube, vkmark against the 949 reference), then Phase 1.
+
 ## 5. Phase 1 — Steam (after Phase 0 passes)
 - Requirements: 4 KiB pages (Ubuntu arm64 generic uses 4 KiB), a working Vulkan driver (drm2kgsl Turnip), unprivileged user namespaces for the Steam Linux Runtime container, and enough guest RAM and disk.
 - Install Valve's ARM64 Linux Steam client (beta), then enable Proton 11 ARM64 for Windows titles. Install FEX (with its x86 rootfs) for x86 Linux-native titles. Fallback: Canonical's `steam` snap (x86 Steam under FEX), which targets Ubuntu.

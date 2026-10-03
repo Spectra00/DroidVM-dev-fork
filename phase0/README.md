@@ -74,6 +74,14 @@ Paste the output back. Phase 0's target is every line `PASS`, in particular `dri
 ## G. Acceptance ladder
 In the Plasma session: `vkcube`, then `sudo apt install -y vkmark && vkmark`. Compare against DroidVM's reference on this phone: drm2kgsl vkmark **949**, Minecraft 63–75 fps. Note the panel refresh rate while testing; at 60 Hz it caps the result.
 
+## E½. Make the guest network static (do this once, over SSH)
+The DHCP lease from DroidVM's NAT network was lost when systemd-networkd restarted during boot. Pin the address the port forward points at, and keep cloud-init from rewriting it (replace the MAC with yours from `ip -br link`):
+```
+echo 'network: {version: 2, ethernets: {enp0s8: {match: {macaddress: "02:80:7a:bf:43:2f"}, set-name: enp0s8, dhcp4: false, addresses: [192.168.188.64/24], routes: [{to: default, via: 192.168.188.1}], nameservers: {addresses: [1.1.1.1, 8.8.8.8]}}}}' | sudo tee /etc/netplan/50-cloud-init.yaml
+echo 'network: {config: disabled}' | sudo tee /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+sudo netplan apply
+```
+
 ## If something fails
 - **Can't log in (password rejected):** stop the VM, then run `bash ~/phase0/host/03-make-seed.sh <username> <newpassword>` and start the VM again. The new seed has a new instance-id, so cloud-init re-applies the user, password and SSH key. Use letters and digits only; symbols can get lost through the native display's keyboard mapping.
 - **No network (`ip -br link` shows only `lo`):** the VM has no network adapter; add one (step D). If the NIC exists but has no address: `sudo tee /etc/netplan/60-dvm.yaml` with `network: {version: 2, ethernets: {wired: {match: {name: "en*"}, dhcp4: true}}}`, then `sudo chmod 600` it and `sudo netplan apply`.
