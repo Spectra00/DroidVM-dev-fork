@@ -28,7 +28,9 @@ import java.util.UUID;
 
 import cn.classfun.droidvm.daemon.console.ConsoleStream;
 import cn.classfun.droidvm.daemon.vm.backend.BackendBase;
+import cn.classfun.droidvm.daemon.vm.backend.QemuBackendInstance;
 import cn.classfun.droidvm.lib.data.CrosvmExit;
+import cn.classfun.droidvm.lib.data.QemuExit;
 import cn.classfun.droidvm.lib.hugepage.PoolPreflight;
 import cn.classfun.droidvm.lib.natives.NativeProcess;
 import cn.classfun.droidvm.lib.natives.UnixHelper;
@@ -70,6 +72,17 @@ public final class VMInstance extends VMConfig {
     // Delay before relaunching on reboot: lets the kernel settle same-name TAP
     // teardown/recreate and throttles a guest reboot-loop (no restart cap).
     private static final long REBOOT_RELAUNCH_DELAY_MS = 500;
+
+    /**
+     * Consecutive GH_VM_START ENODEV retries used since the last clean run. See
+     * {@link QemuExit#GUNYAH_VM_START_RETRY}: bounded and backed off, because the Resource
+     * Manager reports every vdevice-creation failure -- transient or permanent -- the same way.
+     */
+    private volatile int gunyahStartRetries = 0;
+    private static final int GUNYAH_START_MAX_RETRIES = 3;
+    /** 1s, 2s, 4s -- validated on device to resolve every back-to-back VM_INIT rejection within
+     * the first retry; see qemu-gunyah-fork's HANDOFF_README.md sections 18-19. */
+    private static final long[] GUNYAH_START_BACKOFF_MS = {1000, 2000, 4000};
 
     public interface VMEventCallback {
         @SuppressWarnings("unused")
@@ -227,6 +240,11 @@ public final class VMInstance extends VMConfig {
             joinThreads(1000);
             if (!setupTaps()) return false;
             resolveVncConfig();
+            // A start from STOPPED is a fresh, user-initiated start and gets the full GH_VM_START
+            // retry budget; only the automatic relaunches (which come in from REBOOTING) may
+            // draw it down. Otherwise one exhausted round -- or a retried VM killed within
+            // PIN_RETRY_RESET_MS -- would leave every later manual start with fewer retries.
+            if (state == VMState.STOPPED) gunyahStartRetries = 0;
             stoppedByUser = false;
             exitCode = -1;
             setState(VMState.STARTING);
@@ -526,13 +544,32 @@ public final class VMInstance extends VMConfig {
         // VM got off the ground: a pin refusal happens inside VM creation, seconds later. A start
         // that lasted is what clears the one-shot, so a VM that ran for an hour and then died can
         // still be retried, while a VM failing in three seconds cannot loop.
-        if (code == 0 || ranForMs > PIN_RETRY_RESET_MS) pinRetryUsed = false;
+        if (code == 0 || ranForMs > PIN_RETRY_RESET_MS) {
+            pinRetryUsed = false;
+            gunyahStartRetries = 0;
+        }
         boolean pinFailure = !stoppedByUser && !wantRestart && code != 0 && !pinRetryUsed
             && exitLogSuggestsPinFailure();
         if (pinFailure) {
             pinRetryUsed = true;
             wantRestart = true;
             Log.w(TAG, fmt("VM %s exited on unpinnable memory; retrying once", getName()));
+        }
+        // A rejected GH_VM_START (Gunyah RM rejecting VM_INIT) is worth a few short, backed-off
+        // retries -- see QemuExit.GUNYAH_VM_START_RETRY -- but only for the QEMU backend, since
+        // this exit status is QEMU's own and a crosvm exit of 83 (not currently defined) would
+        // mean something else entirely.
+        long relaunchDelayMs = REBOOT_RELAUNCH_DELAY_MS;
+        boolean gunyahStartRetry = !stoppedByUser && !wantRestart
+            && inst instanceof QemuBackendInstance
+            && code == QemuExit.GUNYAH_VM_START_RETRY.getCode()
+            && gunyahStartRetries < GUNYAH_START_MAX_RETRIES;
+        if (gunyahStartRetry) {
+            relaunchDelayMs = GUNYAH_START_BACKOFF_MS[gunyahStartRetries];
+            gunyahStartRetries++;
+            wantRestart = true;
+            Log.w(TAG, fmt("VM %s GH_VM_START rejected (retryable); retry %d/%d in %dms",
+                getName(), gunyahStartRetries, GUNYAH_START_MAX_RETRIES, relaunchDelayMs));
         }
         if (stoppedByUser && code != 0) {
             Log.i(TAG, fmt("VM %s stopped by user", getName()));
@@ -551,7 +588,10 @@ public final class VMInstance extends VMConfig {
             setState(VMState.REBOOTING);
             fireEvent("rebooting", null);
             Log.i(TAG, fmt("VM %s rebooting (exit code %d)", getName(), code));
-            scheduleRelaunch();
+            // The GH_VM_START retry races the hypervisor's RCU-deferred object reclaim, not
+            // the crosvm hugepage reserve, so it skips PoolPreflight and uses its own backoff
+            // instead of the fixed reboot delay.
+            scheduleRelaunch(relaunchDelayMs, !gunyahStartRetry);
             return;
         }
         nprocGuardResetBestEffort();
@@ -598,24 +638,32 @@ public final class VMInstance extends VMConfig {
         return log.contains("GH-PIN[") && log.contains("cannot be long-term pinned");
     }
 
-    private void scheduleRelaunch() {
+    /**
+     * Relaunches after {@code delayMs}, optionally waiting for the crosvm hugepage reserve to
+     * refill first ({@code waitForPool}). The GH_VM_START ENODEV retry passes false: that race is
+     * the Gunyah hypervisor's RCU-deferred object reclaim, not the memory reserve, and was
+     * validated on device without this wait (qemu-gunyah-fork's HANDOFF_README.md sections 18-19).
+     */
+    private void scheduleRelaunch(long delayMs, boolean waitForPool) {
         var t = new Thread(() -> {
             try {
-                Thread.sleep(REBOOT_RELAUNCH_DELAY_MS);
+                Thread.sleep(delayMs);
             } catch (InterruptedException ignored) {
                 return;
             }
             if (state != VMState.REBOOTING) return; // user changed state meanwhile
-            // The VM we are relaunching has only just let go of its memory, and the huge-page
-            // reserve takes a few seconds to get it back. Relaunching into that gap is the one
-            // way a reboot turns into a dead VM: the pages come from ordinary movable memory
-            // instead, the VMM refuses to hand memory it cannot pin to the hypervisor, and the
-            // relaunch exits with ENOMEM (measured: reserve at 526 of 2542 pages when the
-            // relaunch started, full again nine seconds later). Nobody is watching a reboot, so
-            // it waits like any other background start -- see PoolPreflight.waitForPool.
-            if (!PoolPreflight.waitForPool(item, PoolPreflight.RELAUNCH_ATTEMPTS,
-                PoolPreflight.BACKGROUND_INTERVAL_MS, PoolPreflight.BACKGROUND_ACQUIRE_AT))
-                Log.w(TAG, fmt("VM %s relaunching with the reserve still short", getName()));
+            if (waitForPool) {
+                // The VM we are relaunching has only just let go of its memory, and the huge-page
+                // reserve takes a few seconds to get it back. Relaunching into that gap is the one
+                // way a reboot turns into a dead VM: the pages come from ordinary movable memory
+                // instead, the VMM refuses to hand memory it cannot pin to the hypervisor, and the
+                // relaunch exits with ENOMEM (measured: reserve at 526 of 2542 pages when the
+                // relaunch started, full again nine seconds later). Nobody is watching a reboot, so
+                // it waits like any other background start -- see PoolPreflight.waitForPool.
+                if (!PoolPreflight.waitForPool(item, PoolPreflight.RELAUNCH_ATTEMPTS,
+                    PoolPreflight.BACKGROUND_INTERVAL_MS, PoolPreflight.BACKGROUND_ACQUIRE_AT))
+                    Log.w(TAG, fmt("VM %s relaunching with the reserve still short", getName()));
+            }
             if (state != VMState.REBOOTING) return; // stopped while we waited
             if (!start()) {
                 Log.w(TAG, fmt("VM %s relaunch failed", getName()));
