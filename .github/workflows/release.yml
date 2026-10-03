@@ -2,7 +2,8 @@ name: Release
 
 on:
   push:
-    tags: [ "**" ]
+    # The archive tag marks a frozen snapshot, not a release; never publish it.
+    tags: [ "**", "!qemu-debian12-final" ]
   workflow_dispatch:
 
 permissions:
