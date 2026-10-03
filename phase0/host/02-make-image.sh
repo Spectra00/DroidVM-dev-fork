@@ -38,7 +38,9 @@ echo "checksum ok ($got)"
 
 echo "== guest disk ($size)"
 qemu-img info "$IMG" | grep -E 'file format|virtual size'
-cp "$IMG" "$DEST/resolute-server-cloudimg-arm64.qcow2"
+# Ubuntu ships the image with compressed qcow2 clusters, which crosvm cannot read. Rewrite it
+# uncompressed (still qcow2, still sparse) so the app does not have to convert it at start.
+qemu-img convert -p -O qcow2 "$IMG" "$DEST/resolute-server-cloudimg-arm64.qcow2"
 qemu-img resize "$DEST/resolute-server-cloudimg-arm64.qcow2" "$size"
 qemu-img info "$DEST/resolute-server-cloudimg-arm64.qcow2" | grep -E 'file format|virtual size'
 
