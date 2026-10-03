@@ -36,7 +36,7 @@ Conditions: guest 3584 MiB, 4 vCPU pinned to host CPUs 2–5, GPU worker cpuset 
 
 ## 4. Phase 0 — bring-up of the proven stack (no Steam yet)
 
-Done when the ladder in 4.7 passes on this phone with drm2kgsl.
+Done when the ladder in 4.7 passes on this phone with drm2kgsl. The runnable steps (inventory, host prep, image + cloud-init seed, VM settings, guest provisioning, checks) are in **`phase0/README.md`**.
 
 ### 4.1 Establish exactly which build to run
 - This fork's `master` currently equals upstream `Droid-VM/DroidVM` `master` (`5c89691`, published as dev build `0.0.6.r240.5c89691`), plus this README. `CrosvmBackendInstance` already emits the drm2kgsl/Venus/gfxstream arguments (`--pre-alloc drm-host-mb=…,gpu-guest-mb=…`, `context-types=drm`, `udmabuf=true`).
@@ -45,6 +45,19 @@ Done when the ladder in 4.7 passes on this phone with drm2kgsl.
   - `strings usr/lib/libvirglrenderer.so | grep -i kgsl` is non-empty (drm2kgsl backend present);
   - `libvulkan_freedreno.so` (host Turnip) and `libgfxstream_backend.so` are present.
 - If the published prebuilts lack drm2kgsl or the R5 fixes, find the newest upstream build that has them (DroidVM dev releases, `wip/3d-accel` branches) before building anything ourselves.
+
+**Off-device result (2026-10-03).** I extracted `prebuilt-arm64-v8a.tar.xz` from `DroidVM-Prebuilts` @ `c4998e1` (committed 2026-09-12):
+- crosvm (sha256 `cd3693ba…a7b`) has `--pre-alloc`, `drm-host-mb`, `gpu-guest-mb`, `Drm2KgslPool`, `GpuPool`, `udmabuf`, `gunyah-pvm`, `transport-cap`, `--prepare-lend-mthp-mode`, `--protected-vm-without-firmware` and `--swiotlb`.
+- `libvirglrenderer.so` (sha256 `40b5edaa…633d`) has the KGSL backend (`/dev/kgsl-3d0`, `CROSVM_DRM2KGSL_*`) and the guest-alloc protocol (`MSM_BO_GUEST_ALLOC`, requiring `udmabuf=true` plus a guest pool), plus Venus.
+- The host Turnip is Mesa 26.3.0-devel. drm2kgsl doesn't use it; only gfxstream and Venus do.
+- It also ships DroidVM's own guest kernel (Linux 6.18.16, 4K pages) and `edk2-gunyah.fd`.
+- These files are byte-identical in size to what the phone had installed on 2026-09-30, so the phone most likely already has them; `phase0/host/00-inventory.sh` confirms by hash.
+- Not verifiable from strings: whether this crosvm carries the R5-era crosvm fixes (power-key IRQ edge type, display flip release, qcow2 zero clusters) and the virtio-snd `ACCESS_PLATFORM`/chmap fixes. Phase 0's on-device checks cover them (the power button, display reconnect, `/proc/asound/cards`).
+
+Guest side, pinned to the published `droidvm` release line:
+- `droidvm-guest-additions` tag **`v0.1.0`** (= branch `droidvm`, 2026-08-30, guest-alloc pool and host-pool probing). `wip/3d-accel` diverges from it with a 7.1-kernel compile fix; use that only if the guest kernel is 7.1+.
+- `mesa-guest_26.3.0-devel+droidvm.r227672.gcecc0e96_arm64.deb` (ferls2077/mesa-cross release `droidvm`, Droid-VM/mesa `droidvm` @ `cecc0e9`, which includes the `0x44050a00` Adreno 840 virtio IDs). It is slightly older than R5's `r227687`.
+- Ubuntu 26.04 `resolute-server-cloudimg-arm64.img` (2026-09-27) ships kernel `7.0.0-34-generic`, inside the guest additions' `^7\.` build range.
 
 ### 4.2 Host preparation (from DroidVM's launch reference)
 - The app daemon loads the kernel modules. After a phone reboot, confirm `gunyah-host-share`, `gh-unmovable` and `udmabuf` are loaded before a manual launch.
@@ -78,7 +91,7 @@ Done when the ladder in 4.7 passes on this phone with drm2kgsl.
 VNC/native display shows the desktop → `vulkaninfo` reports `driverName = turnip` with an Adreno 840 device via virtio → `vkcube` → `vkmark` (in a real desktop session) → optionally Minecraft, compared against section 3.
 
 ### 4.8 App-side items carried over from the archive (evaluate, don't assume)
-- The `nativeForkExec` CLOEXEC fix (`archive/qemu-gunyah-debian12`, `eb65e52`) is in the generic process launcher that also starts crosvm. Check whether upstream `master` still has the pre-exec crash on crosvm launches before porting it.
+- The `nativeForkExec` CLOEXEC fix (`archive/qemu-gunyah-debian12`, `eb65e52`): **not ported.** `master` still has the original child path, and crosvm is launched through the same `NativeProcess`. But the original "crash" evidence turned out to be libsigchain logging the launcher's own deliberate signal reset (the archived QEMU handoff, section 20). The real failures on that path were QEMU option-parsing errors, and DroidVM's R5 run launched crosvm on this phone with this exact code. Revisit only if a crosvm launch dies before `execve`.
 - The pinned debug key makes CI builds update in place, but it must never reach `master`: `dev-release.yml` publishes from `master`, and `release.yml` publishes on any tag push. Keep it off branches that publish.
 
 ## 5. Phase 1 — Steam (after Phase 0 passes)
