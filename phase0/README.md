@@ -43,8 +43,9 @@ New VM with these settings (labels as shown in the app):
 | Graphics → virtio-gpu screen | on, 1408×1050 (a width that's a multiple of 16 keeps the GPU blit path), exporter **Native** |
 | Renderer | **VirGL** (virglrenderer) |
 | Graphics API | **Native Context** (this is drm2kgsl) |
-| udmabuf (guest-alloc) | **on** |
+| udmabuf (guest-alloc) | not shown for Native Context: the app always passes `udmabuf=true` on this route (the switch appears only for GfxStream) |
 | VRAM size (MB) | 1024 (default) |
+| Dynamic vram | either way. With Guest preallocation = VRAM size (1024) and allocation step 0 the whole pool is set aside at boot and never grows, which is the same as off |
 | SimpleFB screen | off |
 | Network | default (bridge/tap) |
 | Audio | virtio-snd on |
