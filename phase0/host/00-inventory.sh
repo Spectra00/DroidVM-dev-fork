@@ -42,6 +42,13 @@ echo "--- loaded kernel modules (gunyah / udmabuf / hugepage / nproc)"
 lsmod 2>/dev/null | grep -iE 'gunyah|gh_|udmabuf|hugepage|nproc' || echo "(none of them loaded -- open the DroidVM app once; its daemon loads them)"
 echo "udmabuf size_limit_mb=$(cat /sys/module/udmabuf/parameters/size_limit_mb 2>/dev/null || echo n/a)"
 
+echo "--- gh_hugepage_reserve pool (guest RAM comes from here; pool_* counts are 2 MB pages)"
+P=/sys/module/gh_hugepage_reserve/parameters
+for f in system_reserve_mb system_reserve_mb_default pool_want pool_want_with_cma; do
+  [ -r "$P/$f" ] && echo "$f=$(cat "$P/$f")"
+done
+[ -r "$P/refill_stat" ] && cat "$P/refill_stat"
+
 echo "--- KernelSU modules"
 for d in /data/adb/modules/*/; do
   [ -f "$d/module.prop" ] || continue

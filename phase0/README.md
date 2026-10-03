@@ -39,7 +39,7 @@ New VM with these settings (labels as shown in the app):
 | Protected VM | the app's default for Gunyah (protected **without firmware**) |
 | Boot | **UEFI on** (EDK2 → Ubuntu's own GRUB). No kernel or initrd paths |
 | Disks | 1: `resolute-server-cloudimg-arm64.qcow2` (virtio, boot). 2: `seed-cidata.img` (virtio) |
-| CPU / memory | 4 vCPUs, **6144 MB** to start (DroidVM's own test used 3584 MB and ran out of memory with Minecraft) |
+| CPU / memory | 4 vCPUs, **4096 MB**. Guest RAM is served from `gh_hugepage_reserve`'s pool, which on this 12 GB phone is capped near `RAM − min(RAM/2, 6144 MB)` ≈ 5.4 GB, so more than about 5 GB won't fit. DroidVM's own test used 3584 MB. The VRAM size below is part of guest RAM. |
 | Graphics → virtio-gpu screen | on, 1408×1050 (a width that's a multiple of 16 keeps the GPU blit path), exporter **Native** |
 | Renderer | **VirGL** (virglrenderer) |
 | Graphics API | **Native Context** (this is drm2kgsl) |

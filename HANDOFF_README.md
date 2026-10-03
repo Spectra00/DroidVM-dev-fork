@@ -73,7 +73,7 @@ Guest side, pinned to the published `droidvm` release line:
 
 ### 4.4 VM configuration in the app (crosvm backend)
 - Backend crosvm, hypervisor Gunyah, protected mode as the app defaults it for Gunyah (protected without firmware), UEFI on.
-- Memory: start at R5's 3584 MiB and raise it for Steam (R5 already hit OOM with Minecraft at 2000 MB of heap on 3.2 GB). 4 vCPUs, pinned as in section 3.
+- Memory: 4096 MiB to start (R5 used 3584 MiB). Guest RAM comes from the gh_hugepage_reserve pool, about 5.4 GB on this 12 GB phone (model CPH2749), which is the ceiling for Steam; add zram inside the guest. 4 vCPUs, pinned as in section 3.
 - Graphics: virtio-gpu screen on; renderer **virglrenderer**, mode **Native** (= drm2kgsl), provider Turnip; guest pool (`gpu-guest-mb`) on with udmabuf; display exporter Native.
 - Network: the app's bridge/tap. Audio: virtio-snd. DroidVM fixed the protected-VM `ACCESS_PLATFORM` and chmap bugs in crosvm (`048f7374e`); check that the installed crosvm has them.
 
