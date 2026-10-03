@@ -24,7 +24,7 @@ WORK=$HOME/phase0-image
 mkdir -p "$WORK" "$DEST"
 cd "$WORK"
 
-for t in curl qemu-img mkfs.vfat mcopy sha256sum; do
+for t in curl qemu-img sha256sum; do
   command -v $t >/dev/null || { echo "missing $t: pkg install -y curl qemu-utils dosfstools mtools"; exit 1; }
 done
 
@@ -45,50 +45,4 @@ qemu-img resize "$DEST/resolute-server-cloudimg-arm64.qcow2" "$size"
 qemu-img info "$DEST/resolute-server-cloudimg-arm64.qcow2" | grep -E 'file format|virtual size'
 
 echo "== cloud-init seed"
-key=""
-for k in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub"; do
-  [ -f "$k" ] && { key=$(cat "$k"); break; }
-done
-if [ -z "$key" ]; then
-  ssh-keygen -q -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519"
-  key=$(cat "$HOME/.ssh/id_ed25519.pub")
-fi
-
-cat > meta-data <<EOF
-instance-id: droidvm-ubuntu2604-1
-local-hostname: ubuntu-dvm
-EOF
-
-cat > user-data <<EOF
-#cloud-config
-hostname: ubuntu-dvm
-ssh_pwauth: true
-users:
-  - name: $user
-    groups: [sudo, adm, video, render, audio, input]
-    shell: /bin/bash
-    sudo: "ALL=(ALL) NOPASSWD:ALL"
-    lock_passwd: false
-    ssh_authorized_keys:
-      - $key
-chpasswd:
-  expire: false
-  users:
-    - name: $user
-      password: $pass
-      type: text
-growpart:
-  mode: auto
-  devices: ["/"]
-EOF
-
-rm -f seed-cidata.img
-dd if=/dev/zero of=seed-cidata.img bs=1M count=2 status=none
-mkfs.vfat -n CIDATA seed-cidata.img >/dev/null
-mcopy -i seed-cidata.img user-data meta-data ::
-mdir -i seed-cidata.img ::
-cp seed-cidata.img "$DEST/seed-cidata.img"
-rm -f user-data   # holds the password in plain text
-
-ls -la "$DEST"
-echo "done. SSH key used: ${key%% *} ...${key: -20}"
+bash "$(dirname "$0")/03-make-seed.sh" "$user" "$pass"
