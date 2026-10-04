@@ -138,6 +138,9 @@ Categories=Game;
 MimeType=x-scheme-handler/steam;x-scheme-handler/steamlink;
 DESK
 update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+# Game shortcuts Steam creates run "steam steam://rungameid/<id>"; give them a "steam" on the
+# default PATH (they go through the running client, so per-game launch options still apply).
+sudo ln -sfn "$HOME/.local/bin/steam-arm64" /usr/local/bin/steam
 
 say "done"
 echo "Start it from the menu (Games > Steam (ARM64)) or a terminal in the Plasma session:"
