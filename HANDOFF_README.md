@@ -115,9 +115,24 @@ Open going into Phase 1: the guest has 3.5 GB total and about 1.8 GB available w
 
 
 ## 5. Phase 1 — Steam (after Phase 0 passes)
-- Requirements: 4 KiB pages (Ubuntu arm64 generic uses 4 KiB), a working Vulkan driver (drm2kgsl Turnip), unprivileged user namespaces for the Steam Linux Runtime container, and enough guest RAM and disk.
-- Install Valve's ARM64 Linux Steam client (beta), then enable Proton 11 ARM64 for Windows titles. Install FEX (with its x86 rootfs) for x86 Linux-native titles. Fallback: Canonical's `steam` snap (x86 Steam under FEX), which targets Ubuntu.
-- First targets: a light native ARM64 or Proton title, then something DXVK-heavy.
+- Requirements: 4 KiB pages (Ubuntu arm64 generic uses 4 KiB), a working Vulkan driver (drm2kgsl Turnip), unprivileged user namespaces for the Steam Linux Runtime container (Ubuntu's AppArmor allows them for `/usr/bin/bwrap`, so the `bubblewrap` package is installed), and enough guest RAM and disk.
+- Kit: `phase1/`. `30-steam-install.sh` installs **Valve's native linuxarm64 client** from Valve's update manifest, checked against the manifest's sha256, plus a launcher `~/.local/bin/steam-arm64`. `40-steam-check.sh` reports what the client and its runtime container see.
+- Decisions:
+  - Not the Canonical snap: it bundles its own Mesa (gpu-2404) and would bypass the guest's Turnip.
+  - Not Ubuntu's `steam` package: it is x86 and needs i386 multiarch.
+  - Windows titles use Valve's **Proton ARM64** (`proton-stable-arm64`: Wine ARM64EC with FEX inside, DXVK on the system Vulkan), which the client downloads. No FEX packages are needed for that.
+  - x86 Linux titles (Valve's FEX tool, x86 rootfs, thunks forwarding GL/Vulkan to the guest's ARM64 Mesa) are deferred until Proton works.
+- Lessons taken from [Scrumpper/Steam-ARM](https://github.com/Scrumpper/Steam-ARM) and [UbuntuAsahi/steam-arm64](https://github.com/UbuntuAsahi/steam-arm64):
+  - The client zip uses backslash path separators, so it is unpacked with Python.
+  - The first start verifies files and exits; later starts use `-noverifyfiles -norepairfiles`.
+  - Exit code 42 means the client applied an update and must be restarted.
+  - The client directory must be on `LD_LIBRARY_PATH` (gameoverlayui).
+  - `DISABLE_VK_LAYER_VALVE_steam_fossilize_1=1` is set, because Steam's ARM64 fossilize layer stops Proton titles at device creation.
+  - Shader pre-caching is off (`-noshaders`) unless `STEAM_SHADERS=1`.
+  - The client wants `libvpx.so.6`, so it is aliased to Ubuntu's newer soname.
+  - Asahi's `muvm` is not needed here (4K pages).
+- Risk to verify first: Turnip lives in `/usr/local` (mesa-guest). The runtime container (pressure-vessel) must import it through `VK_DRIVER_FILES`; `40-steam-check.sh` runs `vulkaninfo` inside SteamLinuxRuntime 4 to confirm `turnip` and not llvmpipe.
+- First targets: a light Proton title, then something DXVK-heavy.
 
 ## 6. Known limits from DroidVM's own testing
 - Guest vblank is tied to the phone panel's real refresh rate: at 60 Hz it caps Venus/drm2kgsl throughput, and ColorOS often picks 60 Hz.
