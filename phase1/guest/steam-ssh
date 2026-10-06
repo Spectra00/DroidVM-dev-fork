@@ -1,0 +1,8 @@
+#!/bin/sh
+# Start Steam on the guest's Plasma desktop from an SSH login, detached from that login.
+# An SSH shell has no DISPLAY/WAYLAND_DISPLAY, so a plain `steam-arm64 &` exits with
+# "Unable to open X11 display"; this borrows the desktop's environment from plasmashell.
+pid=$(pgrep -xo plasmashell) || { echo "desktop not running"; exit 1; }
+export $(tr '\0' '\n' < /proc/$pid/environ | grep -E '^(DISPLAY|WAYLAND_DISPLAY|XAUTHORITY|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|XDG_CURRENT_DESKTOP)=')
+setsid -f "$HOME/.local/bin/steam-arm64" -cef-disable-gpu "$@"
+echo "steam starting on $DISPLAY - log: ~/steam-arm64.log"

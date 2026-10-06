@@ -32,8 +32,53 @@ Per-game launch options worth knowing (Properties → Launch options):
 - `PROTON_LOG=1 %command%` writes `~/steam-<appid>.log`; paste it when a game fails.
 - `PROTON_USE_WINED3D=1 %command%` runs the game on OpenGL (zink) instead of DXVK, for comparison.
 
+## E. Result: Ori and the Blind Forest (2026-10-06)
+
+The first Proton ARM64 title, played on the phone. Steam was started over SSH (`steam-ssh`). After launch, the Steam web helpers were paused and paged out (`webhelper-pageout`). Measured over SSH with `free -m` and `vmstat 2 10` while the game was running:
+
+| | First run | VM memory raised | **+ web helpers paged out** |
+|---|---|---|---|
+| guest RAM (`free` total) | 3540 MB | 3892 MB | 3892 MB |
+| `available` | 688 MB | 799 MB | **1078 MB** |
+| `free` | 133 MB | 99 MB | **385 MB** |
+| swap (zram) used | 1511 MB | 1099 MB | 1505 MB (paused helpers parked there) |
+| `si` while playing (KB/s) | 0–666, most samples non-zero | 0 (one sample of 2) | **0 (one sample of 18)** |
+| `so` | 0 | 0 | 0 |
+| CPU `us`+`sy` / `st` | ~36 % / 7–10 % | ~37 % / 7–10 % | ~38 % / 8–10 % |
+
+Memory is no longer the limit. Swap-in during play went to about zero, and about 1 GB stays available. What's left is host CPU contention: `st` (steal) stays at 8–10 %, which is the likely cause of the occasional choppy audio. The next step there is pinning crosvm's virtio-snd backend to its own core, outside the vCPU cores; the GPU worker already has its own cpuset.
+
+Process memory (RSS) during play: `ori.exe` 904 MB; the 8 paused `steamwebhelper` went from 1066 MB to 676 MB RSS, 156 MB PSS.
+
+### What was set up for that run
+VM (DroidVM editor):
+- VM memory raised from 4096 MB. It must stay within the hugepage pool: `pool_want=2768` × 2 MB = 5536 MB, which covers RAM plus the 1024 MB guest-alloc prealloc.
+- Sound: Buffer **High quality (12 buffers)**, underrun **WSOLA**.
+
+Steam launch options for the game:
+```
+PROTON_LOG=1 PULSE_LATENCY_MSEC=60 DXVK_FRAME_RATE=60 %command%
+```
+Drop `PROTON_LOG=1` once nothing needs debugging.
+
+Guest:
+- PipeWire: `pw-metadata -n settings 0 clock.force-quantum 1024` (until reboot).
+- zram swap the size of RAM (already in Phase 0).
+- `systemctl --user set-property plasma-plasmashell.service MemoryHigh=220M`: caps the desktop shell; its excess goes to zram instead of RAM.
+- Discover notifier and `kaccess` autostarts hidden; screen auto-lock off (`kscreenlockerrc` `Autolock=false`, `LockOnResume=false`).
+- Konsole and System Monitor closed while playing; monitoring over SSH instead.
+
+### Tools
+- `guest/steam-ssh`: starts Steam on the desktop from an SSH login. A plain `steam-arm64 &` over SSH fails with `Unable to open X11 display` and dies with the SSH session. Alternative: `systemd-run --user --collect --unit=steam-arm64 ~/.local/bin/steam-arm64 -cef-disable-gpu`, stopped with `systemctl --user stop steam-arm64`.
+- `guest/webhelper-pageout`: `sudo webhelper-pageout` after the game has started pauses every `steamwebhelper` (SIGSTOP) and pages their memory out to zram with `process_madvise(MADV_PAGEOUT)`. Killing them instead makes Steam respawn them or restart. Run `webhelper-pageout --resume` before opening Steam's window or overlay again. Paste multi-line files over SSH: pasting into the native display interleaves lines.
+
+Install both:
+```sh
+for f in steam-ssh webhelper-pageout; do curl -fsSL -o ~/.local/bin/$f https://raw.githubusercontent.com/Spectra00/DroidVM-dev-fork/master/phase1/guest/$f; chmod +x ~/.local/bin/$f; done
+```
+
 ## If something fails
 - **Steam window never appears:** paste the last 40 lines of `~/steam-arm64.log` and `~/.local/share/Steam/logs/bootstrap_log.txt`.
 - **Game window black or it exits at once:** paste the `PROTON_LOG=1` log and `40-steam-check.sh` output.
-- **Guest freezes or the OOM killer fires:** watch `free -m`. The client's web UI is heavy for 3.5 GB; close other apps. Don't `kill -9` crosvm; shut down from inside the guest.
+- **Guest freezes or the OOM killer fires:** watch `free -m`. The client's web UI is heavy for 3.5 GB; close other apps, and page the web helpers out (section E). Don't `kill -9` crosvm; shut down from inside the guest.
 - **x86 Linux games** (no Windows build): not covered yet; they need Valve's FEX tool, which is a later step.

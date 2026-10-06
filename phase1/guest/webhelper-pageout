@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""Pause Steam's web helpers and push their memory out to swap (zram) now.
+
+  sudo webhelper-pageout          pause them and page their memory out
+  webhelper-pageout --resume      resume them (do this before opening Steam's window)
+"""
+import ctypes, os, signal, sys
+
+NAME = "steamwebhelper"
+SYS_pidfd_open, SYS_process_madvise, MADV_PAGEOUT = 434, 440, 21
+libc = ctypes.CDLL(None, use_errno=True)
+
+
+class iovec(ctypes.Structure):
+    _fields_ = [("base", ctypes.c_void_p), ("len", ctypes.c_size_t)]
+
+
+def pids():
+    out = []
+    for d in os.listdir("/proc"):
+        if d.isdigit():
+            try:
+                if open(f"/proc/{d}/comm").read().strip() == NAME:
+                    out.append(int(d))
+            except OSError:
+                pass
+    return out
+
+
+def mem(pid):
+    r = s = 0
+    try:
+        for line in open(f"/proc/{pid}/status"):
+            if line.startswith("VmRSS:"):
+                r = int(line.split()[1]) // 1024
+            elif line.startswith("VmSwap:"):
+                s = int(line.split()[1]) // 1024
+    except OSError:
+        pass
+    return r, s
+
+
+def pageout(pid):
+    fd = libc.syscall(SYS_pidfd_open, pid, 0)
+    if fd < 0:
+        return False
+    ok = False
+    try:
+        for line in open(f"/proc/{pid}/maps"):
+            if "[v" in line:  # vdso / vvar
+                continue
+            a, b = (int(x, 16) for x in line.split()[0].split("-"))
+            iov = iovec(a, b - a)
+            if libc.syscall(SYS_process_madvise, fd, ctypes.byref(iov), 1,
+                            MADV_PAGEOUT, 0) >= 0:
+                ok = True
+    finally:
+        os.close(fd)
+    return ok
+
+
+ps = pids()
+if not ps:
+    sys.exit(f"no {NAME} running")
+if len(sys.argv) > 1 and sys.argv[1] == "--resume":
+    for p in ps:
+        os.kill(p, signal.SIGCONT)
+    print(f"resumed {len(ps)} {NAME}")
+    sys.exit(0)
+if os.geteuid() != 0:
+    sys.exit("run with sudo (paging out another process needs CAP_SYS_NICE)")
+for p in ps:
+    os.kill(p, signal.SIGSTOP)
+total_before = total_after = 0
+for p in ps:
+    before = mem(p)[0]
+    ok = pageout(p)
+    after, swap = mem(p)
+    total_before += before
+    total_after += after
+    print(f"pid {p}: RAM {before:5d} -> {after:5d} MB, in swap {swap:5d} MB"
+          + ("" if ok else "  (pageout refused)"))
+print(f"paused {len(ps)} {NAME}; RAM {total_before} -> {total_after} MB")
