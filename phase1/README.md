@@ -78,10 +78,11 @@ What fixed it, one change at a time:
 
 `pw-top` during play afterwards: output node QUANT 1024, ERR 5→7 then flat; the game's stream (quantum 720) ERR 10→12 then flat.
 
-The guest buffer was most likely the main fix. The pinning stays because it costs nothing and keeps the sound path off the vCPU cores. Since branch `feat/crosvm-snd-rt-pinning`, DroidVM does step 2 itself at every VM start, so no command is needed for it (`SoundHostPlacement`; see `CrosvmBackendInstance.placeSoundDevice`):
+The guest buffer was most likely the main fix. The pinning stays because it costs nothing and keeps the sound path off the vCPU cores. DroidVM now does step 2 itself at every VM start, so no command is needed for it (`SoundHostPlacement`; see `CrosvmBackendInstance.placeSoundDevice`):
 - The sound process goes on the host cores no vCPU and no GPU worker cpuset use, little cores only when any are free; here that is 0–1.
 - Its main thread gets `SCHED_FIFO` 10. When no vCPU is pinned, only the priority is set.
 - The result is logged as `sound device placed: pid … cpus=…`.
+- **Confirmed on the phone (2026-10-06):** after an app update and a VM restart, with no manual commands, the sound process showed `Cpus_allowed_list: 0-1` and `SCHED_FIFO` priority 10 (build from `test/snd-pinning-signed`, same code).
 
 A rare, brief graphical stutter remains. It most likely comes from DXVK compiling shaders, or FEX translating code, on first sight of a new area (shader pre-caching is off: `-noshaders`). It's not from the pinning. To test that, give every vCPU `2-5` instead of one core each.
 
