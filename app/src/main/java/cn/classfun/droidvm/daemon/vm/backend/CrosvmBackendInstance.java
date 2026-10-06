@@ -48,6 +48,8 @@ import cn.classfun.droidvm.lib.utils.RunUtils;
 import cn.classfun.droidvm.lib.store.base.DataItem;
 import cn.classfun.droidvm.lib.store.disk.DiskBus;
 import cn.classfun.droidvm.lib.store.vm.CpuPlacementPlan;
+import cn.classfun.droidvm.lib.store.vm.SoundHostPlacement;
+import cn.classfun.droidvm.lib.utils.CpuUtils;
 import cn.classfun.droidvm.lib.store.vm.DisplayExporter;
 import cn.classfun.droidvm.lib.store.vm.DisplayTransportCap;
 import cn.classfun.droidvm.lib.store.vm.GpuApi;
@@ -79,6 +81,8 @@ public final class CrosvmBackendInstance extends VMBackendInstance {
     private String controlSocketPath = null;
     /** Set by prepareGpuCgroup() once the cpuset exists and holds cores; else null. */
     private String gpuCgroupPath = null;
+    /** Set by buildPeripheralCommand() when a --virtio-snd card went out; see placeSoundDevice(). */
+    private boolean soundDeviceEmitted = false;
     /** Owns the per-VM native-display input sockets (crosvm-facing + UI-facing); see start(). */
     private final NativeDisplayInputBridge inputBridge = new NativeDisplayInputBridge();
     private final InputConsoleStream stdoutStream;
@@ -205,6 +209,7 @@ public final class CrosvmBackendInstance extends VMBackendInstance {
             for (var rs : resolvedSerials)
                 if (rs.pipe != null) rs.pipe.closeRemoteFd();
             result.setProcess(process);
+            if (soundDeviceEmitted) placeSoundDevice(process.pid());
             stdoutStream.setInputStream(process.getInputStream());
             stderrStream.setInputStream(process.getErrorStream());
         } catch (IOException e) {
@@ -1311,6 +1316,52 @@ public final class CrosvmBackendInstance extends VMBackendInstance {
     }
 
     /**
+     * Keeps the sound device's process off the cores the VM was pinned to, and gives its main
+     * thread a low real-time priority, so playback is not starved by the vCPUs it serves.
+     *
+     * <p>crosvm starts the virtio-snd backend as a child of its own ({@code /proc/self/exe device
+     * snd}, re-executed under the app uid; see buildSoundConfig), a moment after it starts, so
+     * this waits for that child off the start path. The cores are the ones the VM left free
+     * ({@link SoundHostPlacement}); with no vCPU pinned only the priority is set. Threads the
+     * process starts later inherit the mask from the thread that starts them. Best effort: a
+     * failure is logged and the VM runs as it would have without it.</p>
+     */
+    private void placeSoundDevice(int crosvmPid) {
+        var cores = SoundHostPlacement.cores(config.item, CpuUtils.getCores());
+        var csv = new StringBuilder();
+        for (int c : cores) csv.append(csv.length() > 0 ? "," : "").append(c);
+        var mask = CpuUtils.coresCsvToHexMask(csv.toString());
+        // Every "device snd" process is checked for crosvm in its ancestry (/proc/<pid>/stat field
+        // 4 is the parent), so another VM's sound process -- and this shell, whose own command
+        // line matches -- are never picked. toybox: taskset takes a hex mask; chrt takes the pid
+        // before the priority.
+        var script = fmt("own() { a=$1; while [ -n \"$a\" ] && [ \"$a\" -gt 1 ]; do "
+                + "a=$(awk '{print $4}' /proc/$a/stat 2>/dev/null); "
+                + "[ \"$a\" = %d ] && return 0; done; return 1; }; "
+                + "p=; i=0; while [ $i -lt 60 ]; do "
+                + "for c in $(pgrep -f 'device snd'); do own $c && { p=$c; break; }; done; "
+                + "[ -n \"$p\" ] && break; i=$((i+1)); sleep 0.5; done; "
+                + "[ -z \"$p\" ] && { echo 'no device snd process under crosvm'; exit 1; }; "
+                + "%s"
+                + "chrt -f -p $p %d >/dev/null || exit 1; "
+                + "echo \"pid $p cpus=$(grep Cpus_allowed_list /proc/$p/status | cut -f2)\"",
+            crosvmPid,
+            mask.isEmpty() ? "" : fmt("taskset -a -p %s $p >/dev/null || exit 1; ", mask),
+            SoundHostPlacement.RT_PRIO);
+        var worker = new Thread(() -> {
+            var r = RunUtils.run(script);
+            if (r.isSuccess())
+                Log.i(TAG, fmt("sound device placed: %s, SCHED_FIFO %d",
+                    r.getOutString().trim(), SoundHostPlacement.RT_PRIO));
+            else
+                Log.w(TAG, fmt("sound device placement failed: %s %s",
+                    r.getOutString().trim(), r.getErrString().trim()));
+        }, "snd-placement");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    /**
      * Attaches the VM's peripherals. One peripheral is one guest device.
      *
      * <p>A VIRTIO_SOUND peripheral is `--virtio-snd` with a `uid`: the audio has to leave
@@ -1333,6 +1384,7 @@ public final class CrosvmBackendInstance extends VMBackendInstance {
      * editor's red text says before the VM is ever started.</p>
      */
     private void buildPeripheralCommand(@NonNull List<String> args) {
+        soundDeviceEmitted = false;
         var peripherals = VMPeripheralConfig.listOf(config.item);
         int appUid = getAppUid();
         int xhciSeen = 0;
@@ -1372,6 +1424,7 @@ public final class CrosvmBackendInstance extends VMBackendInstance {
             }
             args.add("--virtio-snd");
             args.add(buildSoundConfig(peripheral, appUid));
+            soundDeviceEmitted = true;
         }
     }
 

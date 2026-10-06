@@ -46,7 +46,7 @@ The first Proton ARM64 title, played on the phone. Steam was started over SSH (`
 | `so` | 0 | 0 | 0 |
 | CPU `us`+`sy` / `st` | ~36 % / 7–10 % | ~37 % / 7–10 % | ~38 % / 8–10 % |
 
-Memory is no longer the limit. Swap-in during play went to about zero, and about 1 GB stays available. What's left is host CPU contention: `st` (steal) stays at 8–10 %, which is the likely cause of the occasional choppy audio. The next step there is pinning crosvm's virtio-snd backend to its own core, outside the vCPU cores; the GPU worker already has its own cpuset.
+Memory is no longer the limit. Swap-in during play went to about zero, and about 1 GB stays available. What was left was host CPU contention: `st` (steal) stayed at 8–10 %, with the audio still choppy at times. Fixed below (*Audio*).
 
 Process memory (RSS) during play: `ori.exe` 904 MB; the 8 paused `steamwebhelper` went from 1066 MB to 676 MB RSS, 156 MB PSS.
 
@@ -67,6 +67,23 @@ Guest:
 - `systemctl --user set-property plasma-plasmashell.service MemoryHigh=220M`: caps the desktop shell; its excess goes to zram instead of RAM.
 - Discover notifier and `kaccess` autostarts hidden; screen auto-lock off (`kscreenlockerrc` `Autolock=false`, `LockOnResume=false`).
 - Konsole and System Monitor closed while playing; monitoring over SSH instead.
+
+### Audio: choppy playback fixed (2026-10-06)
+Checked on the host, nothing was pinned: the 4 vCPU threads, the GPU worker (`kgsl-sync`) and crosvm's sound process (`/proc/self/exe device snd`, re-executed under the app uid) could all run on any of cores 0–7, at normal priority.
+
+What fixed it, one change at a time:
+1. **vCPU Affinity** on (VM editor → CPU): vCPU 0–3 → host cores 2, 3, 4, 5, one core each. **GPU Worker Cpuset** on, core 7. Steal dropped from 8–10 % to 4–8 % (one spike of 16). Audio still choppy.
+2. Sound process pinned to the cores left free (0–1) with `taskset`, and its main thread set to `SCHED_FIFO` 10 with `chrt`. Audio still choppy.
+3. **PipeWire quantum back at 1024.** `pw-metadata ... clock.force-quantum` resets on every guest reboot and was back at 0, so the guest was running PipeWire's small default buffer. Made permanent with `~/.config/pipewire/pipewire.conf.d/10-quantum.conf` (`default.clock.quantum` and `default.clock.min-quantum` = 1024). **Audio clean.**
+
+`pw-top` during play afterwards: output node QUANT 1024, ERR 5→7 then flat; the game's stream (quantum 720) ERR 10→12 then flat.
+
+The guest buffer was most likely the main fix. The pinning stays because it costs nothing and keeps the sound path off the vCPU cores. Since branch `feat/crosvm-snd-rt-pinning`, DroidVM does step 2 itself at every VM start, so no command is needed for it (`SoundHostPlacement`; see `CrosvmBackendInstance.placeSoundDevice`):
+- The sound process goes on the host cores no vCPU and no GPU worker cpuset use, little cores only when any are free; here that is 0–1.
+- Its main thread gets `SCHED_FIFO` 10. When no vCPU is pinned, only the priority is set.
+- The result is logged as `sound device placed: pid … cpus=…`.
+
+A rare, brief graphical stutter remains. It most likely comes from DXVK compiling shaders, or FEX translating code, on first sight of a new area (shader pre-caching is off: `-noshaders`). It's not from the pinning. To test that, give every vCPU `2-5` instead of one core each.
 
 ### Tools
 - `guest/steam-ssh`: starts Steam on the desktop from an SSH login. A plain `steam-arm64 &` over SSH fails with `Unable to open X11 display` and dies with the SSH session. Alternative: `systemd-run --user --collect --unit=steam-arm64 ~/.local/bin/steam-arm64 -cef-disable-gpu`, stopped with `systemctl --user stop steam-arm64`.
