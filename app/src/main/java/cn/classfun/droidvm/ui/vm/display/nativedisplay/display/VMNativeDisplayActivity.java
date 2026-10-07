@@ -76,6 +76,7 @@ import cn.classfun.droidvm.ui.vm.display.nativedisplay.input.KeyCodeMapper;
 import cn.classfun.droidvm.lib.perf.GamePerfHint;
 import cn.classfun.droidvm.lib.perf.SystemGestureGuard;
 import cn.classfun.droidvm.ui.vm.display.nativedisplay.input.NativeExtraKeysPanel;
+import cn.classfun.droidvm.ui.vm.display.nativedisplay.input.KeySinkFrameLayout;
 import cn.classfun.droidvm.ui.vm.display.nativedisplay.input.NativeKeyboardEditText;
 import cn.classfun.droidvm.ui.vm.display.nativedisplay.input.TouchScaleCalculator;
 
@@ -123,7 +124,7 @@ public final class VMNativeDisplayActivity extends AppCompatActivity
     private TextView tvStatus;
     private LinearLayout overlayConnecting;
     private TextView tvConnectingMessage;
-    private FrameLayout displayContainer;
+    private KeySinkFrameLayout displayContainer;
     private SurfaceView surfaceView;
     private SurfaceView cursorView;
 
@@ -478,6 +479,14 @@ public final class VMNativeDisplayActivity extends AppCompatActivity
         // Also on the container: a right-click over the letterbox area (outside the surface) must
         // still be consumed or the framework synthesizes BACK from it.
         displayContainer.setOnGenericMotionListener(this::onSurfaceGenericMotion);
+        // Keys reach the guest from the pre-IME pass, before the framework leaves touch mode
+        // (see KeySinkFrameLayout), and the container never draws a focus highlight in case
+        // touch mode is left some other way. It holds focus whenever the IME's editor doesn't.
+        displayContainer.setFocusable(true);
+        displayContainer.setFocusableInTouchMode(true);
+        displayContainer.setDefaultFocusHighlightEnabled(false);
+        surfaceView.setDefaultFocusHighlightEnabled(false);
+        displayContainer.setPreImeKeyListener(this::onPreImeKey);
         surfaceView.setOnHoverListener(this::onSurfaceHover);
         // Restore the persisted mode here rather than on the daemon attach: the FAB menu is
         // reachable before the binder arrives, and a menu built on a stale TOUCH would write that
@@ -767,24 +776,39 @@ public final class VMNativeDisplayActivity extends AppCompatActivity
             return true;
         if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN)
             return super.dispatchKeyEvent(event);
-        if (inputForwarder != null && connected) {
-            // Don't wrap a hardware modifier key in the panel's sticky modifiers; only real keys.
-            boolean modifier = isModifierKey(keyCode);
-            boolean handled;
-            if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                if (!modifier && nativeExtraKeys.hasNonStickyModifiers())
-                    nativeExtraKeys.applyModifiers(true);
-                handled = inputForwarder.sendKeyEvent(keyCode, true);
-            } else if (event.getAction() == KeyEvent.ACTION_UP) {
-                handled = inputForwarder.sendKeyEvent(keyCode, false);
-                if (!modifier && nativeExtraKeys.hasNonStickyModifiers())
-                    nativeExtraKeys.applyModifiers(false);
-            } else {
-                handled = false;
-            }
-            if (handled) return true;
-        }
+        if (forwardKeyToGuest(event)) return true;
         return super.dispatchKeyEvent(event);
+    }
+
+    // A key that comes in while the system keyboard's editor is not focused: hand it to the guest
+    // before the framework's touch-mode and focus handling get it. BACK and the volume keys stay
+    // on the normal path (dispatchKeyEvent), as do all keys while the IME is up.
+    private boolean onPreImeKey(@NonNull KeyEvent event) {
+        if (keyboardInput.hasFocus()) return false;
+        int keyCode = event.getKeyCode();
+        if (keyCode == KeyEvent.KEYCODE_BACK
+            || keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN)
+            return false;
+        return forwardKeyToGuest(event);
+    }
+
+    // Sends one key event to the guest; false when there is no guest to take it.
+    private boolean forwardKeyToGuest(@NonNull KeyEvent event) {
+        if (inputForwarder == null || !connected) return false;
+        int keyCode = event.getKeyCode();
+        // Don't wrap a hardware modifier key in the panel's sticky modifiers; only real keys.
+        boolean modifier = isModifierKey(keyCode);
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            if (!modifier && nativeExtraKeys.hasNonStickyModifiers())
+                nativeExtraKeys.applyModifiers(true);
+            return inputForwarder.sendKeyEvent(keyCode, true);
+        } else if (event.getAction() == KeyEvent.ACTION_UP) {
+            boolean handled = inputForwarder.sendKeyEvent(keyCode, false);
+            if (!modifier && nativeExtraKeys.hasNonStickyModifiers())
+                nativeExtraKeys.applyModifiers(false);
+            return handled;
+        }
+        return false;
     }
 
     private static boolean isModifierKey(int keyCode) {
@@ -972,6 +996,9 @@ public final class VMNativeDisplayActivity extends AppCompatActivity
     // ROMs re-show the keyboard for a still-focused editor right after a hide request.
     private void hideSoftKeyboard() {
         keyboardInput.clearFocus();
+        // Focus goes back to the display, not to whatever Android picks next (the FAB, say),
+        // which is what keeps hardware and injected keys going to the guest.
+        displayContainer.requestFocus();
         var controller = WindowCompat.getInsetsController(getWindow(), keyboardInput);
         controller.hide(WindowInsetsCompat.Type.ime());
         var imm = getSystemService(InputMethodManager.class);
@@ -1124,6 +1151,7 @@ public final class VMNativeDisplayActivity extends AppCompatActivity
         // from eating multi-finger input meant for the guest (see SystemGestureGuard).
         SystemGestureGuard.enterDisplay();
         keyboardGrab.setResumed(true);
+        if (!keyboardInput.hasFocus()) displayContainer.requestFocus();
     }
 
     @Override

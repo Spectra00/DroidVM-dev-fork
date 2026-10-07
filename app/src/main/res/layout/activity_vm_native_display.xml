@@ -54,7 +54,7 @@
 
     </LinearLayout>
 
-    <FrameLayout
+    <cn.classfun.droidvm.ui.vm.display.nativedisplay.input.KeySinkFrameLayout
         android:id="@+id/display_container"
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -155,7 +155,7 @@
             app:tint="@android:color/white"
             tools:ignore="ClassNameCheck" />
 
-    </FrameLayout>
+    </cn.classfun.droidvm.ui.vm.display.nativedisplay.input.KeySinkFrameLayout>
 
     <cn.classfun.droidvm.ui.vm.display.base.DisplayExtraKeysPanel
         android:id="@+id/extra_keys_panel"
