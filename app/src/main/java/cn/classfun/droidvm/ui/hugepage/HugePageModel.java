@@ -415,7 +415,12 @@ final class HugePageModel {
         // are already free (or trivially assemblable) before the sweep - the module's
         // own acquire_drop_slab covers slab only, not the page cache. Best-effort: a
         // failed drop doesn't block the acquire.
-        run("echo 3 > /proc/sys/vm/drop_caches");
+        run("sync; echo 3 > /proc/sys/vm/drop_caches");
+        // Then have the kernel compact what is left, so free 4 KB pages are gathered
+        // into whole 2 MB windows the sweep can take without migrating anything. It
+        // matters most for a pool sized past half of RAM (a lowered system_reserve_mb),
+        // where nearly every window has to be found. Best-effort, like the drop.
+        run("echo 1 > /proc/sys/vm/compact_memory");
         // Walk the requested mode down to the gentlest migrating mode: the module
         // returns -ENOSYS for a mode whose symbols didn't resolve (e.g. v3 on a
         // kernel lacking the folio/reclaim symbols, or v2 with no alloc_contig_range),

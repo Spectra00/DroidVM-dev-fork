@@ -1215,6 +1215,10 @@
     <string name="hugepage_adv_unavailable">不可用</string>
     <string name="hugepage_adv_unset">(default)</string>
     <string name="hugepage_adv_warn_below_default">低于本机默认值 %1$d，系统可能不稳定</string>
+    <string name="hugepage_adv_reserve_confirm_title">修改系统保留量？</string>
+    <string name="hugepage_adv_reserve_confirm_msg">这是大页模块始终留给 Android 的内存。调低它可以让大页池（以及虚拟机内存）超过手机内存的一半，但 Android 可用的内存会变少：大内存虚拟机运行时后台应用会被清理，如果大页池凑不齐，虚拟机可能无法启动。新值在重启后生效。至少 %1$d MB 始终留给 Android。</string>
+    <string name="hugepage_adv_reserve_effect">使用此值（重启后）：大页池最多 %1$d MB，Android 保留 %2$d MB</string>
+    <string name="hugepage_adv_reserve_too_low">至少需要给 Android 保留 %1$d MB</string>
     <string name="hugepage_adv_invalid">数值无效</string>
     <string name="hugepage_adv_saved">已保存</string>
     <string name="hugepage_adv_save_failed">保存失败</string>

@@ -1260,6 +1260,10 @@
     <string name="hugepage_adv_unavailable">غير متاح</string>
     <string name="hugepage_adv_unset">(الافتراضي)</string>
     <string name="hugepage_adv_warn_below_default">أقل من القيمة الافتراضية لهذا الجهاز (%1$d)؛ قد يصبح النظام غير مستقر</string>
+    <string name="hugepage_adv_reserve_confirm_title">تغيير احتياطي النظام؟</string>
+    <string name="hugepage_adv_reserve_confirm_msg">هذه هي الذاكرة التي تتركها وحدة الصفحات الكبيرة لنظام أندرويد دائمًا. خفضها يسمح للمجمع، ومعه ذاكرة الجهاز الافتراضي، بتجاوز نصف ذاكرة الهاتف. عندها يبقى لأندرويد أقل: أثناء تشغيل جهاز افتراضي كبير تُغلق التطبيقات في الخلفية، وقد يفشل تشغيل الجهاز الافتراضي إذا تعذّر تجميع المجمع. تسري القيمة الجديدة بعد إعادة التشغيل. يبقى %1$d ميغابايت على الأقل لأندرويد دائمًا.</string>
+    <string name="hugepage_adv_reserve_effect">بهذه القيمة، بعد إعادة التشغيل: المجمع حتى %1$d ميغابايت، ويحتفظ أندرويد بـ %2$d ميغابايت</string>
+    <string name="hugepage_adv_reserve_too_low">يجب أن يبقى %1$d ميغابايت على الأقل لأندرويد</string>
     <string name="hugepage_adv_invalid">قيمة غير صالحة</string>
     <string name="hugepage_adv_saved">تم الحفظ</string>
     <string name="hugepage_adv_save_failed">فشل الحفظ</string>

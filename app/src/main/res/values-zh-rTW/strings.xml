@@ -1216,6 +1216,10 @@
     <string name="hugepage_adv_unavailable">不可用</string>
     <string name="hugepage_adv_unset">(default)</string>
     <string name="hugepage_adv_warn_below_default">低於本機預設值 %1$d，系統可能不穩定</string>
+    <string name="hugepage_adv_reserve_confirm_title">修改系統保留量？</string>
+    <string name="hugepage_adv_reserve_confirm_msg">這是大頁模組始終留給 Android 的記憶體。調低它可以讓大頁池（以及虛擬機記憶體）超過手機記憶體的一半，但 Android 可用的記憶體會變少：大記憶體虛擬機執行時背景應用會被清除，如果大頁池湊不齊，虛擬機可能無法啟動。新值在重新開機後生效。至少 %1$d MB 始終留給 Android。</string>
+    <string name="hugepage_adv_reserve_effect">使用此值（重新開機後）：大頁池最多 %1$d MB，Android 保留 %2$d MB</string>
+    <string name="hugepage_adv_reserve_too_low">至少需要給 Android 保留 %1$d MB</string>
     <string name="hugepage_adv_invalid">數值無效</string>
     <string name="hugepage_adv_saved">已儲存</string>
     <string name="hugepage_adv_save_failed">儲存失敗</string>

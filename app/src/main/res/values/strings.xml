@@ -1254,6 +1254,10 @@
     <string name="hugepage_adv_unavailable">Unavailable</string>
     <string name="hugepage_adv_unset">(default)</string>
     <string name="hugepage_adv_warn_below_default">Below this device\'s default (%1$d); the system may become unstable</string>
+    <string name="hugepage_adv_reserve_confirm_title">Change the system reserve?</string>
+    <string name="hugepage_adv_reserve_confirm_msg">This is the RAM the hugepage module always leaves to Android. Lowering it lets the pool, and with it VM memory, grow past half of the phone\'s RAM. Android then has less to run on: while a large VM runs, background apps get killed, and a VM may fail to start if the pool can\'t be gathered. The new value takes effect after a reboot. At least %1$d MB always stays with Android.</string>
+    <string name="hugepage_adv_reserve_effect">With this value, after a reboot: pool up to %1$d MB, Android keeps %2$d MB</string>
+    <string name="hugepage_adv_reserve_too_low">At least %1$d MB must stay with Android</string>
     <string name="hugepage_adv_invalid">Invalid value</string>
     <string name="hugepage_adv_saved">Saved</string>
     <string name="hugepage_adv_save_failed">Save failed</string>

@@ -10,7 +10,6 @@ import static cn.classfun.droidvm.lib.utils.StringUtils.fmt;
 import static cn.classfun.droidvm.lib.utils.ThreadUtils.runOnPool;
 
 import android.os.Bundle;
-import android.os.SystemClock;
 import android.text.Editable;
 import android.widget.EditText;
 import android.widget.TextView;
@@ -51,14 +50,17 @@ import cn.classfun.droidvm.ui.widgets.row.TextRowWidget;
  */
 public final class HugePageAdvancedActivity extends AppCompatActivity {
     /**
-     * The one key with no edit affordance. Lowering the reserve is how a phone is
-     * made unstable, so its row stays a label and the editor sits behind a
-     * deliberate gesture - anyone who reaches it went looking for it.
+     * The RAM the module leaves to Android: the pool may hold everything above
+     * {@code min(RAM/2, system_reserve_mb)}, so lowering it below half of RAM is
+     * the one way to a VM bigger than half the phone. Lowering it is also how a
+     * phone is made unstable, so the editor opens behind a confirmation that says
+     * what it costs, and never goes below {@link #RESERVE_FLOOR_MB}.
      */
     private static final String KEY_SYSTEM_RESERVE = "system_reserve_mb";
-    private static final int RESERVE_TAPS = 10;
-    /** Taps further apart than this start the count over ("consecutive"). */
-    private static final long RESERVE_TAP_WINDOW_MS = 1500;
+    /** Android keeps at least this much (MB), whatever is asked for. */
+    private static final int RESERVE_FLOOR_MB = 3072;
+    /** The module's own ceiling on the pool table (24 GiB, gh_init's size_max). */
+    private static final long POOL_TABLE_MAX_MB = 24L * 1024;
 
     private final HugePageModel model = new HugePageModel();
     /** Rows keyed by parameter name, in {@link HugePageModel#ADVANCED_KEYS} order. */
@@ -67,8 +69,8 @@ public final class HugePageAdvancedActivity extends AppCompatActivity {
     private Map<String, HugePageModel.Knob> knobs = Map.of();
     /** This device's default reserve (MB), or -1 when the module can't say. */
     private int reserveDefaultMb = -1;
-    private int reserveTapCount;
-    private long reserveLastTapMs;
+    /** MemTotal (MB), the module's totalram_pages; -1 when unreadable. */
+    private long ramMb = -1;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -87,7 +89,7 @@ public final class HugePageAdvancedActivity extends AppCompatActivity {
             var key = e.getKey();
             e.getValue().setText(key);          // the raw name, never a translation
             if (KEY_SYSTEM_RESERVE.equals(key))
-                e.getValue().setOnClickListener(v -> onReserveTap());
+                e.getValue().setOnClickListener(v -> confirmReserveEdit());
             else
                 e.getValue().setOnClickListener(v -> showEditor(key));
         }
@@ -99,19 +101,38 @@ public final class HugePageAdvancedActivity extends AppCompatActivity {
         load();
     }
 
+    /** Say what lowering the reserve costs before the editor opens. */
+    private void confirmReserveEdit() {
+        new MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.hugepage_adv_reserve_confirm_title)
+            .setMessage(getString(R.string.hugepage_adv_reserve_confirm_msg, RESERVE_FLOOR_MB))
+            .setPositiveButton(android.R.string.ok, (d, w) -> showEditor(KEY_SYSTEM_RESERVE))
+            .setNegativeButton(android.R.string.cancel, null)
+            .show();
+    }
+
     /**
-     * Ten taps in a row open the {@code system_reserve_mb} editor, and nothing
-     * before the tenth acknowledges them. The silence is the design: a stray
-     * double-tap must not offer to shrink the reserve that keeps the phone alive.
+     * The pool ceiling (MB) the module will compute for {@code reserveMb} on this
+     * phone, as gh_init does it: {@code RAM - min(RAM/2, reserve)}, at most the
+     * table's 24 GiB, in whole 2 MB pages. -1 when RAM is unknown.
      */
-    private void onReserveTap() {
-        var now = SystemClock.uptimeMillis();
-        reserveTapCount = now - reserveLastTapMs > RESERVE_TAP_WINDOW_MS
-            ? 1 : reserveTapCount + 1;
-        reserveLastTapMs = now;
-        if (reserveTapCount < RESERVE_TAPS) return;
-        reserveTapCount = 0;
-        showEditor(KEY_SYSTEM_RESERVE);
+    static long poolMaxMb(long ramMb, long reserveMb) {
+        if (ramMb <= 0) return -1;
+        long keep = Math.min(ramMb / 2, reserveMb);
+        return Math.min(ramMb - keep, POOL_TABLE_MAX_MB) / 2 * 2;
+    }
+
+    /** MemTotal in MB from /proc/meminfo, or -1. */
+    private static long readRamMb() {
+        try (var reader = new java.io.BufferedReader(new java.io.FileReader("/proc/meminfo"))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (!line.startsWith("MemTotal:")) continue;
+                return Long.parseLong(line.replaceAll("[^0-9]", "")) / 1024;
+            }
+        } catch (Exception ignored) {
+        }
+        return -1;
     }
 
     /**
@@ -125,10 +146,12 @@ public final class HugePageAdvancedActivity extends AppCompatActivity {
         runOnPool(() -> {
             var read = model.advancedKnobs();
             var def = model.systemReserveDefaultMb();
+            var ram = readRamMb();
             runOnUiThread(() -> {
                 if (isFinishing()) return;
                 knobs = read;
                 reserveDefaultMb = def;
+                ramMb = ram;
                 for (var e : rows.entrySet()) {
                     var knob = read.get(e.getKey());
                     e.getValue().setValue(knob == null || knob.live == null
@@ -151,6 +174,7 @@ public final class HugePageAdvancedActivity extends AppCompatActivity {
         TextInputLayout til = view.findViewById(R.id.til_adv_value);
         EditText input = view.findViewById(R.id.et_adv_value);
         TextView warning = view.findViewById(R.id.tv_adv_warning);
+        TextView effect = view.findViewById(R.id.tv_adv_effect);
 
         var knob = knobs.get(key);
         var unavailable = getString(R.string.hugepage_adv_unavailable);
@@ -186,8 +210,22 @@ public final class HugePageAdvancedActivity extends AppCompatActivity {
                 var raw = input.getText().toString().trim();
                 var value = parse(key, raw);
                 ok.setEnabled(raw.isEmpty() || value != null);   // empty = clear
-                til.setError(value == null && !raw.isEmpty()
-                    ? getString(R.string.hugepage_adv_invalid) : null);
+                var reserve = KEY_SYSTEM_RESERVE.equals(key);
+                String error = null;
+                if (value == null && !raw.isEmpty())
+                    error = reserve && isNumberBelow(raw, RESERVE_FLOOR_MB)
+                        ? getString(R.string.hugepage_adv_reserve_too_low, RESERVE_FLOOR_MB)
+                        : getString(R.string.hugepage_adv_invalid);
+                til.setError(error);
+                // What the value does, in the units the pool screen and the VM editor use:
+                // the pool ceiling it allows, and what Android keeps. Empty = the default.
+                long shown = value != null ? value
+                    : raw.isEmpty() && reserveDefaultMb > 0 ? reserveDefaultMb : -1;
+                long poolMax = reserve && shown > 0 ? poolMaxMb(ramMb, shown) : -1;
+                if (poolMax > 0)
+                    effect.setText(getString(R.string.hugepage_adv_reserve_effect,
+                        (int) poolMax, (int) (ramMb - poolMax)));
+                effect.setVisibility(poolMax > 0 ? VISIBLE : GONE);
                 // Only the reserve has a "too low". The module hands back THIS
                 // device's default, so the threshold is right even where RAM/2
                 // already caps the built-in one and lowering to it is a no-op.
@@ -221,7 +259,7 @@ public final class HugePageAdvancedActivity extends AppCompatActivity {
         long min, max;
         switch (key) {
             case KEY_SYSTEM_RESERVE:
-                min = 64;                 // the module's own floor
+                min = RESERVE_FLOOR_MB;   // the module's own floor is 64; ours is the safe one
                 max = 1024L * 1024;
                 break;
             case "boot_acquire":
@@ -241,6 +279,14 @@ public final class HugePageAdvancedActivity extends AppCompatActivity {
                 max = 1024L * 1024;
         }
         return value < min || value > max ? null : value;
+    }
+
+    private static boolean isNumberBelow(@NonNull String raw, long limit) {
+        try {
+            return Long.parseLong(raw.trim()) < limit;
+        } catch (NumberFormatException e) {
+            return false;
+        }
     }
 
     /** Persist one key ({@code null} clears it) and re-read what stuck. */
